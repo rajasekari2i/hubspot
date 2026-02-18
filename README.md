@@ -2,13 +2,295 @@
 
 An intelligence layer that monitors sales emails via Gmail push notifications, classifies deal-progression signals using LLM-based intent analysis, generates human-reviewed stage recommendations delivered via Slack, and writes approved changes back to HubSpot CRM.
 
-## How It Works
+## Architecture
 
+```mermaid
+graph TB
+    subgraph External Services
+        Gmail[Gmail API]
+        PubSub[Google Cloud<br/>Pub/Sub]
+        HubSpot[HubSpot CRM<br/>API v3]
+        SlackAPI[Slack API]
+        Claude[Anthropic<br/>Claude Haiku 4.5]
+        GPT[OpenAI<br/>GPT-4o-mini]
+    end
+
+    subgraph Backend ["Backend (FastAPI / Python 3.11)"]
+        API[REST API<br/>:8000]
+        MW[Middleware<br/>Auth / Logging / Trace]
+
+        subgraph Workers
+            PSC[Pub/Sub<br/>Consumer]
+            WR[Watch<br/>Renewer]
+            EXP[Expiration<br/>Worker]
+            TR[Token<br/>Refresher]
+            DLQ[DLQ<br/>Processor]
+            PS[Pipeline<br/>Sync]
+        end
+
+        subgraph Services
+            ING[Ingestion]
+            TL[Thread Linker]
+            IA[Intent Analyzer]
+            SM[Stage Mapper]
+            REC[Recommendation]
+            NOT[Notification]
+            CRM[CRM Updater]
+            PII[PII Redactor]
+            AUD[Audit Service]
+        end
+
+        subgraph Integrations
+            GC[Gmail Client]
+            HC[HubSpot Client]
+            LLM[LLM Orchestrator]
+            SC[Slack Client]
+        end
+    end
+
+    subgraph Dashboard ["Dashboard (Next.js 14 / TypeScript)"]
+        RPage[Recommendations]
+        APage[Analytics]
+        DPage[Deals]
+        Admin[Admin Panel]
+    end
+
+    subgraph Data ["Data Layer"]
+        PG[(PostgreSQL 15)]
+        RD[(Redis 7)]
+    end
+
+    Gmail -- push notification --> PubSub
+    PubSub --> PSC
+    PSC --> ING
+    ING --> GC --> Gmail
+    ING --> TL
+    TL --> HC --> HubSpot
+    TL --> RD
+    IA --> PII --> LLM
+    LLM --> Claude
+    LLM -.fallback.-> GPT
+    SM --> PG
+    REC --> PG
+    NOT --> SC --> SlackAPI
+    CRM --> HC
+    AUD --> PG
+
+    API --> MW --> Services
+    Dashboard -- HTTP --> API
+    SlackAPI -- interactions --> API
+
+    Services --> PG
+    Services --> RD
+    WR --> GC
+    PS --> HC
+    TR --> PG
+    DLQ --> RD
+    EXP --> PG
 ```
-Email Received → Gmail Pub/Sub → Ingest & Link Thread → LLM Classification
-    → Stage Recommendation → Slack Notification → User Approve/Reject
-    → CRM Writeback → Audit Log
+
+## Pipeline Flow
+
+```mermaid
+sequenceDiagram
+    participant Rep as Sales Rep
+    participant Gmail as Gmail
+    participant PubSub as Pub/Sub
+    participant Worker as Pub/Sub Worker
+    participant Ingest as Ingestion
+    participant Linker as Thread Linker
+    participant HubSpot as HubSpot API
+    participant PII as PII Redactor
+    participant LLM as LLM (Claude)
+    participant Mapper as Stage Mapper
+    participant RecSvc as Recommendation
+    participant Slack as Slack
+    participant DB as PostgreSQL
+    participant CRM as CRM Updater
+
+    Rep->>Gmail: Send/receive sales email
+    Gmail->>PubSub: Push notification (historyId)
+    PubSub->>Worker: Pull message
+    Worker->>Ingest: Process notification
+
+    Note over Ingest: Fetch new messages via<br/>Gmail history.list
+
+    Ingest->>DB: Persist email metadata
+    Ingest->>Linker: Link thread to deal
+
+    Linker->>HubSpot: Search contacts by email
+    HubSpot-->>Linker: Contact + associated deals
+    Linker->>DB: Create/update email_thread
+
+    Note over PII: Strip signatures,<br/>redact phone/SSN/CC
+
+    Linker->>PII: Prepare email for classification
+    PII->>LLM: Classify intent (structured JSON)
+    LLM-->>PII: {intent, confidence, reasoning, direction}
+
+    alt Confidence >= threshold
+        PII->>Mapper: Map intent to stage
+        Mapper->>DB: Lookup pipeline rules
+        Mapper-->>RecSvc: Recommended stage
+
+        RecSvc->>DB: Create stage_recommendation
+        RecSvc->>Slack: Send Block Kit message
+        Slack-->>Rep: Notification with Approve/Reject/Snooze
+    else Below threshold
+        PII->>DB: Log low-confidence classification
+        Note over DB: Available in dashboard<br/>for RevOps review
+    end
+
+    rect rgb(230, 245, 230)
+        Note over Rep,DB: Approval Flow
+        Rep->>Slack: Tap Approve
+        Slack->>CRM: Trigger writeback
+        CRM->>HubSpot: Read current stage (conflict check)
+        HubSpot-->>CRM: Current stage confirmed
+
+        alt No conflict
+            CRM->>HubSpot: PATCH deal stage + add note
+            CRM->>DB: Update status → write_success
+            CRM->>Slack: Update message (approved)
+            CRM->>DB: Audit log entry
+        else Stage conflict
+            CRM->>DB: Update status → conflict
+            CRM->>Slack: Update message (conflict warning)
+        end
+    end
 ```
+
+## Recommendation State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending : Created
+
+    pending --> approved : User approves
+    pending --> rejected : User rejects (with reason)
+    pending --> snoozed : User snoozes
+    pending --> expired : Timeout reached
+    pending --> superseded : Newer recommendation
+
+    snoozed --> pending : Re-notify
+    snoozed --> expired : Max snoozes (2) reached
+
+    approved --> write_success : CRM updated
+    approved --> write_failed : API error
+    approved --> conflict : Stage changed externally
+
+    write_success --> [*]
+    write_failed --> [*]
+    conflict --> [*]
+    rejected --> [*]
+    expired --> [*]
+    superseded --> [*]
+```
+
+## Data Model
+
+```mermaid
+erDiagram
+    user_configs ||--o{ email_messages : "monitors"
+    user_configs ||--o{ credentials : "has"
+    user_configs ||--o{ deals : "owns"
+    email_messages }o--|| email_threads : "belongs to"
+    email_threads }o--o| deals : "linked to"
+    deals }o--|| pipeline_configs : "in pipeline"
+    email_messages ||--o{ intent_classifications : "classified"
+    email_messages ||--o{ stage_recommendations : "triggers"
+    stage_recommendations }o--|| deals : "for deal"
+    stage_recommendations }o--|| email_threads : "in thread"
+
+    user_configs {
+        uuid id PK
+        varchar email UK
+        varchar display_name
+        enum role "admin/revops/sales_user"
+        varchar hubspot_owner_id
+        varchar slack_user_id
+        boolean is_active
+    }
+
+    email_messages {
+        uuid id PK
+        varchar gmail_message_id UK
+        varchar gmail_thread_id
+        uuid user_id FK
+        varchar subject
+        enum processing_status "pending/processing/classified/failed"
+        uuid trace_id
+    }
+
+    email_threads {
+        uuid id PK
+        varchar gmail_thread_id UK
+        uuid deal_id FK
+        decimal link_confidence
+        varchar link_method
+    }
+
+    deals {
+        uuid id PK
+        varchar hubspot_deal_id UK
+        uuid pipeline_id FK
+        varchar current_stage
+        varchar deal_name
+        decimal amount
+    }
+
+    intent_classifications {
+        uuid id PK
+        uuid email_message_id FK
+        uuid deal_id FK
+        varchar intent
+        decimal confidence_score "0.000-1.000"
+        enum direction "forward/backward/neutral"
+        varchar llm_model
+    }
+
+    stage_recommendations {
+        uuid id PK
+        uuid deal_id FK
+        varchar current_stage
+        varchar recommended_stage
+        decimal confidence_score
+        enum status "pending/approved/rejected/expired/..."
+        timestamptz expires_at
+        varchar idempotency_key UK
+    }
+
+    pipeline_configs {
+        uuid id PK
+        varchar hubspot_pipeline_id UK
+        jsonb stages
+        jsonb intent_to_stage_rules
+        decimal recommendation_threshold
+        integer approval_timeout_hours
+    }
+
+    prompt_versions {
+        uuid id PK
+        varchar version UK
+        text prompt_template
+        text system_prompt
+        jsonb intent_categories
+        boolean is_active "partial unique"
+    }
+
+    audit_logs {
+        uuid id PK
+        uuid trace_id
+        varchar action
+        varchar entity_type
+        uuid entity_id
+        enum actor_type "system/user"
+        jsonb before_state
+        jsonb after_state
+    }
+```
+
+## How It Works
 
 1. **Email Monitoring** - Gmail push notifications detect new sales emails via Pub/Sub
 2. **Thread Linking** - Emails are matched to HubSpot deals through contact resolution
@@ -177,14 +459,18 @@ See `backend/.env.example` for all required environment variables.
 | Approval to CRM write (p50) | < 3s |
 | Approval to CRM write (p95) | < 10s |
 
-## Architecture Highlights
+## Architecture Principles
 
-- **Human-in-the-loop** - All CRM writes require explicit user approval; no auto-approve
-- **Privacy by design** - No email body storage; PII redacted before LLM processing
-- **Resilience** - Circuit breakers, exponential backoff, DLQ for all external calls
-- **Audit trail** - Immutable audit log for every state transition
-- **LLM failover** - Primary (Claude Haiku) with automatic fallback (GPT-4o-mini)
-- **Configurable** - Thresholds, prompts, and pipeline mappings adjustable via admin UI
+| Principle | Implementation |
+|-----------|---------------|
+| **Human-in-the-loop** | All CRM writes require explicit user approval; no auto-approve path exists |
+| **Privacy by design** | No email body storage; PII redacted before LLM processing (phone, SSN, CC stripped) |
+| **Resilience** | Per-integration circuit breakers, exponential backoff with jitter, Redis DLQ with DB overflow |
+| **Audit trail** | Immutable INSERT-only audit log for every state transition with trace_id correlation |
+| **LLM failover** | Primary (Claude Haiku 4.5) with automatic fallback to GPT-4o-mini on circuit break |
+| **Configurable** | Thresholds, prompts, intent mappings, and timeouts adjustable via admin dashboard |
+| **Observability** | Structured JSON logs (structlog), Prometheus metrics, Slack alerting for DLQ/errors |
+| **Security** | AES-256 encrypted tokens, Google OIDC SSO, RBAC (admin/revops/sales_user), Slack signature verification |
 
 ## Running Tests
 
