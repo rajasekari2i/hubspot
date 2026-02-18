@@ -1,0 +1,1325 @@
+openapi: 3.1.0
+info:
+  title: HubSpot Pipeline Intelligence API
+  version: 1.0.0
+  description: >
+    Backend REST API for the Pipeline Intelligence system.
+    Handles recommendations, deals, admin configuration,
+    Slack interactions, audit trails, and system health.
+
+servers:
+  - url: /api/v1
+    description: API v1 prefix
+
+security:
+  - oidcAuth: []
+
+components:
+  securitySchemes:
+    oidcAuth:
+      type: openIdConnect
+      openIdConnectUrl: https://accounts.google.com/.well-known/openid-configuration
+
+  schemas:
+    Recommendation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        deal_id:
+          type: string
+          format: uuid
+        deal_name:
+          type: string
+        current_stage:
+          type: string
+        current_stage_name:
+          type: string
+        recommended_stage:
+          type: string
+        recommended_stage_name:
+          type: string
+        confidence_score:
+          type: number
+          minimum: 0
+          maximum: 1
+        confidence_label:
+          type: string
+          enum: [high, medium, low]
+        intent:
+          type: string
+        reasoning:
+          type: string
+        key_phrases:
+          type: array
+          items:
+            type: string
+        direction:
+          type: string
+          enum: [forward, backward, neutral]
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - rejected
+            - expired
+            - superseded
+            - conflict
+            - write_failed
+        reviewed_by:
+          type: string
+          format: uuid
+          nullable: true
+        reviewed_at:
+          type: string
+          format: date-time
+          nullable: true
+        rejection_reason:
+          type: string
+          nullable: true
+          enum: [wrong_stage, wrong_deal, not_relevant, other, null]
+        user_corrected_stage:
+          type: string
+          nullable: true
+        snooze_count:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        email_subject:
+          type: string
+        email_excerpt:
+          type: string
+        hubspot_deal_url:
+          type: string
+          format: uri
+        gmail_thread_url:
+          type: string
+          format: uri
+          nullable: true
+
+    RecommendationList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Recommendation'
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+
+    ApproveRequest:
+      type: object
+      properties: {}
+
+    RejectRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          enum: [wrong_stage, wrong_deal, not_relevant, other]
+        corrected_stage:
+          type: string
+          nullable: true
+          description: >
+            If reason is wrong_stage, the user may specify the
+            correct stage ID for an alternative CRM update.
+
+    SnoozeRequest:
+      type: object
+      properties:
+        duration_hours:
+          type: integer
+          default: 24
+
+    Deal:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        hubspot_deal_id:
+          type: string
+        deal_name:
+          type: string
+        current_stage:
+          type: string
+        current_stage_name:
+          type: string
+        pipeline_name:
+          type: string
+        owner:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            display_name:
+              type: string
+            email:
+              type: string
+        amount:
+          type: number
+          nullable: true
+        close_date:
+          type: string
+          format: date
+          nullable: true
+        thread_count:
+          type: integer
+        recommendation_count:
+          type: integer
+        last_synced_at:
+          type: string
+          format: date-time
+
+    DecisionTrail:
+      type: object
+      properties:
+        recommendation_id:
+          type: string
+          format: uuid
+        email:
+          type: object
+          properties:
+            subject:
+              type: string
+            excerpt:
+              type: string
+            from_address:
+              type: string
+            received_at:
+              type: string
+              format: date-time
+        classification:
+          type: object
+          properties:
+            intent:
+              type: string
+            confidence_score:
+              type: number
+            reasoning:
+              type: string
+            key_phrases:
+              type: array
+              items:
+                type: string
+            direction:
+              type: string
+            prompt_version:
+              type: string
+            llm_model:
+              type: string
+        mapping:
+          type: object
+          properties:
+            pipeline_name:
+              type: string
+            current_stage:
+              type: string
+            recommended_stage:
+              type: string
+            rule_applied:
+              type: string
+        user_action:
+          type: object
+          nullable: true
+          properties:
+            action:
+              type: string
+              enum: [approved, rejected, expired, superseded]
+            actor:
+              type: string
+            acted_at:
+              type: string
+              format: date-time
+            rejection_reason:
+              type: string
+              nullable: true
+        crm_result:
+          type: object
+          nullable: true
+          properties:
+            status:
+              type: string
+              enum: [success, failed, conflict, pending]
+            updated_at:
+              type: string
+              format: date-time
+              nullable: true
+            error:
+              type: string
+              nullable: true
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        trace_id:
+          type: string
+          format: uuid
+          nullable: true
+        action:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+          format: uuid
+        actor_type:
+          type: string
+          enum: [system, user]
+        actor_id:
+          type: string
+          nullable: true
+        before_state:
+          type: object
+          nullable: true
+        after_state:
+          type: object
+          nullable: true
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    UserConfig:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, revops, sales_user]
+        hubspot_owner_id:
+          type: string
+          nullable: true
+        slack_user_id:
+          type: string
+          nullable: true
+        is_active:
+          type: boolean
+        gmail_watch_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    CreateUserRequest:
+      type: object
+      required:
+        - email
+        - display_name
+        - role
+      properties:
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, revops, sales_user]
+        hubspot_owner_id:
+          type: string
+          nullable: true
+        slack_user_id:
+          type: string
+          nullable: true
+
+    PipelineConfig:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        hubspot_pipeline_id:
+          type: string
+        pipeline_name:
+          type: string
+        stages:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              order:
+                type: integer
+        intent_to_stage_rules:
+          type: object
+          additionalProperties:
+            type: string
+        is_active:
+          type: boolean
+        recommendation_threshold:
+          type: number
+        logging_threshold:
+          type: number
+        approval_timeout_hours:
+          type: integer
+        max_snoozes:
+          type: integer
+
+    UpdatePipelineConfigRequest:
+      type: object
+      properties:
+        intent_to_stage_rules:
+          type: object
+          additionalProperties:
+            type: string
+        recommendation_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        logging_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        approval_timeout_hours:
+          type: integer
+          minimum: 1
+        max_snoozes:
+          type: integer
+          minimum: 0
+        is_active:
+          type: boolean
+
+    PromptVersion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: string
+        prompt_template:
+          type: string
+        system_prompt:
+          type: string
+        intent_categories:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+        created_by:
+          type: string
+          format: uuid
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreatePromptVersionRequest:
+      type: object
+      required:
+        - version
+        - prompt_template
+        - system_prompt
+        - intent_categories
+      properties:
+        version:
+          type: string
+        prompt_template:
+          type: string
+        system_prompt:
+          type: string
+        intent_categories:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+          nullable: true
+
+    AnalyticsOverview:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+        recommendations:
+          type: object
+          properties:
+            total:
+              type: integer
+            approved:
+              type: integer
+            rejected:
+              type: integer
+            expired:
+              type: integer
+            pending:
+              type: integer
+            approval_rate:
+              type: number
+        rejections_by_reason:
+          type: object
+          additionalProperties:
+            type: integer
+        confidence:
+          type: object
+          properties:
+            average:
+              type: number
+            p50:
+              type: number
+            p95:
+              type: number
+        latency:
+          type: object
+          properties:
+            email_to_notification_p50_seconds:
+              type: number
+            email_to_notification_p95_seconds:
+              type: number
+            approval_to_crm_p50_seconds:
+              type: number
+            approval_to_crm_p95_seconds:
+              type: number
+        deal_coverage:
+          type: object
+          properties:
+            total_active_deals:
+              type: integer
+            deals_with_threads:
+              type: integer
+            coverage_percent:
+              type: number
+
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        checks:
+          type: object
+          properties:
+            database:
+              $ref: '#/components/schemas/HealthCheck'
+            redis:
+              $ref: '#/components/schemas/HealthCheck'
+            gmail_api:
+              $ref: '#/components/schemas/HealthCheck'
+            hubspot_api:
+              $ref: '#/components/schemas/HealthCheck'
+            llm_api:
+              $ref: '#/components/schemas/HealthCheck'
+            slack_api:
+              $ref: '#/components/schemas/HealthCheck'
+        timestamp:
+          type: string
+          format: date-time
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        latency_ms:
+          type: integer
+          nullable: true
+        last_checked:
+          type: string
+          format: date-time
+        error:
+          type: string
+          nullable: true
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+        trace_id:
+          type: string
+          format: uuid
+
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+    PageSizeParam:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+
+paths:
+  # ── Recommendations ──────────────────────────────────────────
+  /recommendations:
+    get:
+      operationId: listRecommendations
+      summary: List stage change recommendations
+      description: >
+        Returns paginated recommendations. Sales users see only their
+        own. RevOps and admin see all. Filterable by status, deal,
+        confidence, and date range.
+      tags: [Recommendations]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - pending
+              - approved
+              - rejected
+              - expired
+              - superseded
+              - conflict
+              - write_failed
+        - name: deal_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+        - name: max_confidence
+          in: query
+          schema:
+            type: number
+        - name: created_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, confidence_score, expires_at]
+            default: created_at
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Paginated recommendation list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationList'
+
+  /recommendations/{id}:
+    get:
+      operationId: getRecommendation
+      summary: Get a single recommendation with full details
+      tags: [Recommendations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Recommendation'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /recommendations/{id}/approve:
+    post:
+      operationId: approveRecommendation
+      summary: Approve a recommendation and trigger CRM update
+      description: >
+        Marks the recommendation as approved and initiates the HubSpot
+        deal stage update. Requires the recommendation to be in pending
+        status. Only the deal owner or admin/revops can approve.
+      tags: [Recommendations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveRequest'
+      responses:
+        '200':
+          description: Recommendation approved, CRM update initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Recommendation'
+        '409':
+          description: Recommendation not in pending status or CRM conflict
+
+  /recommendations/{id}/reject:
+    post:
+      operationId: rejectRecommendation
+      summary: Reject a recommendation with reason and optional correction
+      tags: [Recommendations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectRequest'
+      responses:
+        '200':
+          description: Recommendation rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Recommendation'
+
+  /recommendations/{id}/snooze:
+    post:
+      operationId: snoozeRecommendation
+      summary: Snooze a recommendation for later review
+      tags: [Recommendations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SnoozeRequest'
+      responses:
+        '200':
+          description: Recommendation snoozed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Recommendation'
+        '409':
+          description: Max snoozes reached
+
+  /recommendations/{id}/trail:
+    get:
+      operationId: getDecisionTrail
+      summary: Get the full decision trail for a recommendation
+      description: >
+        Returns the complete chain: triggering email -> classification
+        -> stage mapping -> recommendation -> user action -> CRM result.
+      tags: [Recommendations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionTrail'
+
+  /recommendations/bulk:
+    post:
+      operationId: bulkActionRecommendations
+      summary: Bulk approve or reject recommendations (RevOps/admin)
+      tags: [Recommendations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - action
+                - recommendation_ids
+              properties:
+                action:
+                  type: string
+                  enum: [approve, reject]
+                recommendation_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                rejection_reason:
+                  type: string
+                  description: Required when action is reject
+      responses:
+        '200':
+          description: Bulk action results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  succeeded:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        error:
+                          type: string
+
+  # ── Deals ────────────────────────────────────────────────────
+  /deals:
+    get:
+      operationId: listDeals
+      summary: List monitored deals
+      tags: [Deals]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: pipeline_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: owner_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: has_threads
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Deal'
+                  total:
+                    type: integer
+
+  /deals/{id}:
+    get:
+      operationId: getDeal
+      summary: Get deal details with threads and recommendations
+      tags: [Deals]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deal'
+
+  # ── Analytics ────────────────────────────────────────────────
+  /analytics/overview:
+    get:
+      operationId: getAnalyticsOverview
+      summary: Get analytics overview metrics
+      description: >
+        Returns aggregate metrics: approval rates, rejection reasons,
+        confidence distributions, latency percentiles, deal coverage.
+        RevOps and admin only.
+      tags: [Analytics]
+      parameters:
+        - name: period_days
+          in: query
+          schema:
+            type: integer
+            default: 7
+            enum: [7, 14, 30, 90]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsOverview'
+
+  /analytics/classifications/low-confidence:
+    get:
+      operationId: listLowConfidenceClassifications
+      summary: List below-threshold classifications for RevOps review
+      tags: [Analytics]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+            default: 0.30
+        - name: max_confidence
+          in: query
+          schema:
+            type: number
+            default: 0.70
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        email_subject:
+                          type: string
+                        email_excerpt:
+                          type: string
+                        intent:
+                          type: string
+                        confidence_score:
+                          type: number
+                        reasoning:
+                          type: string
+                        deal_name:
+                          type: string
+                          nullable: true
+                        created_at:
+                          type: string
+                          format: date-time
+                  total:
+                    type: integer
+
+  # ── Audit ────────────────────────────────────────────────────
+  /audit/trail/{entity_type}/{entity_id}:
+    get:
+      operationId: getAuditTrail
+      summary: Get full audit trail for an entity
+      tags: [Audit]
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLogEntry'
+                  total:
+                    type: integer
+
+  # ── Admin: Users ─────────────────────────────────────────────
+  /admin/users:
+    get:
+      operationId: listUsers
+      summary: List all system users (admin only)
+      tags: [Admin]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserConfig'
+    post:
+      operationId: createUser
+      summary: Add a new user
+      tags: [Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserConfig'
+
+  /admin/users/{id}:
+    patch:
+      operationId: updateUser
+      summary: Update user configuration
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                role:
+                  type: string
+                  enum: [admin, revops, sales_user]
+                hubspot_owner_id:
+                  type: string
+                slack_user_id:
+                  type: string
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserConfig'
+
+    delete:
+      operationId: deactivateUser
+      summary: Deactivate a user (soft delete)
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: User deactivated
+
+  # ── Admin: Pipelines ─────────────────────────────────────────
+  /admin/pipelines:
+    get:
+      operationId: listPipelineConfigs
+      summary: List pipeline configurations
+      tags: [Admin]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PipelineConfig'
+
+  /admin/pipelines/{id}:
+    get:
+      operationId: getPipelineConfig
+      summary: Get pipeline configuration
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineConfig'
+
+    patch:
+      operationId: updatePipelineConfig
+      summary: Update pipeline configuration
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePipelineConfigRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineConfig'
+
+  # ── Admin: Prompts ───────────────────────────────────────────
+  /admin/prompts:
+    get:
+      operationId: listPromptVersions
+      summary: List all prompt versions
+      tags: [Admin]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PromptVersion'
+
+    post:
+      operationId: createPromptVersion
+      summary: Create a new prompt version
+      tags: [Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePromptVersionRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptVersion'
+
+  /admin/prompts/{id}/activate:
+    post:
+      operationId: activatePromptVersion
+      summary: Activate a prompt version (deactivates current active)
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptVersion'
+
+  /admin/prompts/{id}/rollback:
+    post:
+      operationId: rollbackPromptVersion
+      summary: Rollback to a previous prompt version
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptVersion'
+
+  # ── Auth ─────────────────────────────────────────────────────
+  /auth/login:
+    get:
+      operationId: initiateLogin
+      summary: Redirect to Google OIDC login
+      tags: [Auth]
+      security: []
+      responses:
+        '302':
+          description: Redirect to Google OIDC
+
+  /auth/callback:
+    get:
+      operationId: oidcCallback
+      summary: OIDC callback handler
+      tags: [Auth]
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to dashboard with session cookie
+
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      summary: Get current authenticated user
+      tags: [Auth]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserConfig'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Logout and clear session
+      tags: [Auth]
+      responses:
+        '204':
+          description: Session cleared
+
+  # ── Health ───────────────────────────────────────────────────
+  /health:
+    get:
+      operationId: healthCheck
+      summary: System health check
+      description: >
+        Returns status of all dependencies: database, Redis, Gmail API,
+        HubSpot API, LLM API, Slack API.
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: All systems healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: One or more systems unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  /health/ready:
+    get:
+      operationId: readinessCheck
+      summary: Readiness probe for container orchestration
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Ready to accept traffic
+        '503':
+          description: Not ready
+
+  /metrics:
+    get:
+      operationId: prometheusMetrics
+      summary: Prometheus metrics endpoint
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Prometheus text format metrics
+          content:
+            text/plain:
+              schema:
+                type: string

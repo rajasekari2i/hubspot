@@ -1,0 +1,194 @@
+openapi: 3.1.0
+info:
+  title: HubSpot Pipeline Intelligence - Inbound Webhooks
+  version: 1.0.0
+  description: >
+    Contracts for inbound webhook endpoints that receive callbacks
+    from external services (Slack interactions, Gmail Pub/Sub).
+
+servers:
+  - url: /api/v1
+    description: API v1 prefix
+
+paths:
+  /slack/interactions:
+    post:
+      operationId: handleSlackInteraction
+      summary: Handle Slack interactive message callbacks
+      description: >
+        Receives Slack interaction payloads when users click buttons
+        (Approve, Reject, Snooze) on recommendation messages.
+        Validates X-Slack-Signature before processing.
+        Also handles secondary interactions (rejection reason selection,
+        corrected stage selection).
+      tags: [Webhooks]
+      security: []
+      parameters:
+        - name: X-Slack-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA256 signature for request verification
+        - name: X-Slack-Request-Timestamp
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Request timestamp for replay protection
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: string
+                  description: >
+                    URL-encoded JSON string containing the Slack
+                    interaction payload.
+      responses:
+        '200':
+          description: >
+            Interaction processed. Response body may contain a
+            replacement message or a secondary action prompt.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Slack Block Kit message update
+        '401':
+          description: Invalid signature
+        '404':
+          description: Recommendation not found
+        '409':
+          description: Recommendation not in actionable state
+
+  /pubsub/gmail:
+    post:
+      operationId: handleGmailPubSub
+      summary: Receive Gmail push notification from Pub/Sub
+      description: >
+        Receives push messages from GCP Pub/Sub when a monitored
+        user's mailbox changes. The message data contains the user's
+        email address and a historyId for incremental sync.
+        This endpoint is called by GCP Pub/Sub infrastructure.
+      tags: [Webhooks]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+                - subscription
+              properties:
+                message:
+                  type: object
+                  required:
+                    - data
+                    - messageId
+                    - publishTime
+                  properties:
+                    data:
+                      type: string
+                      description: >
+                        Base64-encoded JSON:
+                        { "emailAddress": "user@example.com",
+                          "historyId": 12345 }
+                    messageId:
+                      type: string
+                    publishTime:
+                      type: string
+                      format: date-time
+                    attributes:
+                      type: object
+                subscription:
+                  type: string
+                  description: Pub/Sub subscription name
+      responses:
+        '200':
+          description: >
+            Message acknowledged. Pub/Sub will not redeliver.
+        '400':
+          description: >
+            Malformed message. Pub/Sub will redeliver.
+        '500':
+          description: >
+            Processing error. Pub/Sub will redeliver with backoff.
+
+components:
+  schemas:
+    SlackInteractionPayload:
+      type: object
+      description: >
+        Structure of the parsed Slack interaction payload.
+        This is the JSON contained in the URL-encoded 'payload' field.
+      properties:
+        type:
+          type: string
+          enum: [block_actions, view_submission]
+        trigger_id:
+          type: string
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+            username:
+              type: string
+            name:
+              type: string
+        channel:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        message:
+          type: object
+          properties:
+            ts:
+              type: string
+            blocks:
+              type: array
+              items:
+                type: object
+        actions:
+          type: array
+          items:
+            type: object
+            properties:
+              action_id:
+                type: string
+                description: >
+                  One of: approve_recommendation,
+                  reject_recommendation, snooze_recommendation,
+                  rejection_reason_selected,
+                  corrected_stage_selected,
+                  confirm_corrected_stage
+              block_id:
+                type: string
+              value:
+                type: string
+                description: >
+                  Contains the recommendation_id or selected value.
+
+    GmailPubSubData:
+      type: object
+      description: >
+        Structure of the decoded Base64 data from Gmail Pub/Sub.
+      properties:
+        emailAddress:
+          type: string
+          format: email
+          description: The email address of the user whose mailbox changed
+        historyId:
+          type: integer
+          description: >
+            The historyId to use with users.history.list for
+            incremental sync. Compare with stored last_history_id.
